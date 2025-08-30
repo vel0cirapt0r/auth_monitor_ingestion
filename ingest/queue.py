@@ -1,6 +1,7 @@
 import json
 from datetime import datetime
 import asyncio
+from typing import Optional
 from redis.asyncio import Redis
 from ingest.config import REDIS_URL, STREAM_KEY, CONSUMER_GROUP
 from ingest.logging_conf import logger
@@ -19,7 +20,7 @@ async def enqueue_batch(request_id: str, client_request_id: Optional[str], mb_ip
     }
     try:
         await redis.xadd(STREAM_KEY, message)
-        logger.info("Enqueued batch", request_id=request_id, item_count=len(items))
+        logger.info("Enqueued batch", request_id=request_id, client_request_id=client_request_id, mb_ip=mb_ip, item_count=len(items))
     except Exception as e:
         logger.error("Failed to enqueue batch", exc_info=e, request_id=request_id)
         raise

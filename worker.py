@@ -5,14 +5,14 @@ from tortoise import Model, fields, Tortoise
 from tortoise.exceptions import IntegrityError
 from tortoise.transactions import in_transaction
 from ingest.queue import consume_and_process
-from ingest.config import DATABASE_URL
+from ingest.config import get_database_url
 from ingest.logging_conf import logger
 import json
 
 
 class Device(Model):
     id = fields.IntField(pk=True)
-    serial_number = fields.CharField(max_length=255, unique=True)
+    serial_number = fields.CharField(max_length=24, unique=True)
     name = fields.CharField(max_length=255, default="")
     location = fields.TextField(null=True)
     created_at = fields.DatetimeField(auto_now_add=True)
@@ -34,12 +34,13 @@ class DeviceProtocol(Model):
 
     class Meta:
         table = "device_registry_deviceprotocol"
-        unique_together = ("device_id", "protocol_type")
+        unique_together = (("device", "protocol_type"),)
 
 
 async def init_tortoise():
+    db_url = get_database_url()  # Checks vars here, only in worker
     await Tortoise.init(
-        db_url=DATABASE_URL,
+        db_url=db_url,
         modules={"models": ["__main__"]}
     )
     await Tortoise.generate_schemas(safe=True)
@@ -58,6 +59,7 @@ async def process_batch(msg: Dict[str, Any]):
     protocol_stats = {"created": 0, "updated": 0, "noop": 0}
     errors = []
 
+    # Process items in order; track last state for de-dupe within batch
     for idx, item in enumerate(items):
         serial_number = item["serial_number"]
         location = item["location"] if item["location"] else None
@@ -73,7 +75,7 @@ async def process_batch(msg: Dict[str, Any]):
                     device_stats["created"] += 1
                 elif location and device.location != location:
                     device.location = location
-                    await device.save()
+                    await device.save(update_fields=["location"])
                     device_stats["updated"] += 1
                 else:
                     device_stats["noop"] += 1
@@ -92,14 +94,36 @@ async def process_batch(msg: Dict[str, Any]):
                     protocol.mb_ip = mb_ip
                     protocol.token = token
                     protocol.token_created_at = token_created_at
-                    await protocol.save()
+                    await protocol.save(update_fields=["mb_ip", "token", "token_created_at"])
                     protocol_stats["updated"] += 1
                 else:
                     protocol_stats["noop"] += 1
         except IntegrityError as e:
             logger_bound.warning("Integrity error; retrying", exc_info=e, idx=idx)
             await asyncio.sleep(0.1)  # Short backoff for race
-            continue  # Or retry logic here if needed
+            # Retry the item once
+            try:
+                async with in_transaction():
+                    device = await Device.get(serial_number=serial_number)
+                    if location and device.location != location:
+                        device.location = location
+                        await device.save(update_fields=["location"])
+                        device_stats["updated"] += 1
+                    else:
+                        device_stats["noop"] += 1
+
+                    protocol = await DeviceProtocol.get(device=device, protocol_type=protocol_type)
+                    if token_created_at > protocol.token_created_at:
+                        protocol.mb_ip = mb_ip
+                        protocol.token = token
+                        protocol.token_created_at = token_created_at
+                        await protocol.save(update_fields=["mb_ip", "token", "token_created_at"])
+                        protocol_stats["updated"] += 1
+                    else:
+                        protocol_stats["noop"] += 1
+            except Exception as retry_e:
+                errors.append({"idx": idx, "error": str(retry_e)})
+                logger_bound.error("Retry failed", exc_info=retry_e, idx=idx)
         except Exception as e:
             errors.append({"idx": idx, "error": str(e)})
             logger_bound.error("Item processing failed", exc_info=e, idx=idx)

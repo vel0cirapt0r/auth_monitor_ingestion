@@ -1,6 +1,7 @@
 import os
 from dotenv import load_dotenv
 from urllib.parse import quote_plus
+from typing import Optional
 
 load_dotenv()
 
@@ -8,19 +9,19 @@ APP_HOST = os.getenv("APP_HOST", "127.0.0.1")
 APP_PORT = int(os.getenv("APP_PORT", 8000))
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
 
-# Construct DATABASE_URL from separate components
-DB_NAME = os.getenv("DATABASE_NAME")
-DB_USER = os.getenv("DATABASE_USER")
-DB_PASSWORD = os.getenv("DATABASE_PASSWORD")
-DB_HOST = os.getenv("DATABASE_HOST")
-DB_PORT = os.getenv("DATABASE_PORT", "5432")
+# DB vars are optional at load (API doesn't need them); worker will check at runtime
+DB_NAME: Optional[str] = os.getenv("DATABASE_NAME")
+DB_USER: Optional[str] = os.getenv("DATABASE_USER")
+DB_PASSWORD: Optional[str] = os.getenv("DATABASE_PASSWORD")
+DB_HOST: Optional[str] = os.getenv("DATABASE_HOST")
+DB_PORT: Optional[str] = os.getenv("DATABASE_PORT", "5432")
 
-if not all([DB_NAME, DB_USER, DB_PASSWORD, DB_HOST]):
-    raise ValueError("Missing required database environment variables")
-
-# URL-encode password to handle special characters
-encoded_password = quote_plus(DB_PASSWORD)
-DATABASE_URL = f"postgresql+asyncpg://{DB_USER}:{encoded_password}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
+# Construct DATABASE_URL only when needed (e.g., in worker)
+def get_database_url() -> str:
+    if not all([DB_NAME, DB_USER, DB_PASSWORD, DB_HOST]):
+        raise ValueError("Missing required database environment variables")
+    encoded_password = quote_plus(DB_PASSWORD)
+    return f"postgres+asyncpg://{DB_USER}:{encoded_password}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
 
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
 
