@@ -21,7 +21,7 @@ def get_database_url() -> str:
     if not all([DB_NAME, DB_USER, DB_PASSWORD, DB_HOST]):
         raise ValueError("Missing required database environment variables")
     encoded_password = quote_plus(DB_PASSWORD)
-    return f"postgres+asyncpg://{DB_USER}:{encoded_password}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
+    return f"postgres://{DB_USER}:{encoded_password}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
 
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
 

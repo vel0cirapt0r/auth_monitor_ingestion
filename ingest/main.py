@@ -5,7 +5,8 @@ import gzip
 import orjson
 from fastapi import FastAPI, Request, HTTPException, status
 from fastapi.responses import ORJSONResponse
-from ingest.schemas import IngestRequest, TestRequest, HealthResponse, IngestResponse, TestResponse, ErrorDetail
+from pydantic import ValidationError
+from ingest.schemas import IngestRequest, TestRequest, HealthResponse, IngestResponse, TestResponse, ErrorDetail, Item
 from ingest.config import APP_VERSION, SCHEMA_VERSION, MAX_BODY_SIZE, APP_HOST, APP_PORT
 from ingest.queue import enqueue_batch
 from ingest.logging_conf import logger
@@ -30,20 +31,19 @@ async def log_requests(request: Request, call_next):
 @app.get("/health", response_model=HealthResponse)
 async def health():
     return HealthResponse(
-        ts=datetime.utcnow().isoformat() + "Z",
+        time=datetime.utcnow().isoformat() + "Z",
         version=APP_VERSION,
     )
 
 async def process_request(request: Request, model: type, enqueue: bool = False):
     content_encoding = request.headers.get("Content-Encoding", "identity").lower()
-    content_length = request.headers.get("Content-Length")
-    if content_length is not None:
-        content_length = int(content_length)
-        if content_length > MAX_BODY_SIZE:
-            raise HTTPException(status_code=413, detail="Payload Too Large")
-    else:
-        content_length = 0  # Unknown
+    content_length_header = request.headers.get("Content-Length")
+    content_length = int(content_length_header) if content_length_header else None
     body = await request.body()
+    if len(body) > MAX_BODY_SIZE:
+        raise HTTPException(status_code=413, detail="Payload Too Large")
+    if content_length is None:
+        content_length = len(body)
     if content_encoding == "gzip":
         try:
             body = gzip.decompress(body)
@@ -55,38 +55,39 @@ async def process_request(request: Request, model: type, enqueue: bool = False):
         raise HTTPException(status_code=400, detail="Invalid JSON")
     request_id = str(uuid.uuid4())
     mb_ip = request.headers.get("X-Real-IP") or request.client.host
-    logger_bound = logger.bind(request_id=request_id, mb_ip=mb_ip)
+    client_request_id = data.get("client_request_id")
+    logger_bound = logger.bind(request_id=request_id, client_request_id=client_request_id, mb_ip=mb_ip)
     errors = []
-    received = len(data.get("items", [])) if "items" in data else 0
+    received = len(data.get("items", []))
     accepted = 0
     valid_items = []
-    client_request_id = None
     sent_at = None
     try:
-        if model == TestRequest and received == 0:
-            # Ping mode: minimal validation
-            parsed = model.model_validate(data)
-        else:
-            parsed = model.model_validate(data)
-        client_request_id = parsed.client_request_id
+        # Validate envelope
+        parsed = model.model_validate(data)
         sent_at = parsed.sent_at
+        client_request_id = parsed.client_request_id
+        # Per-item validation
         if parsed.items:
-            for idx, item in enumerate(parsed.items):
-                valid_items.append(item)
-                accepted += 1
-    except ValueError as e:
-        # Envelope or item validation failed
-        errors.append(ErrorDetail(index=0, code="validation_error", detail=str(e)))
+            for idx, raw_item in enumerate(parsed.items):
+                try:
+                    item = Item.model_validate(raw_item)
+                    valid_items.append(item)
+                    accepted += 1
+                except ValidationError as e:
+                    errors.append(ErrorDetail(index=idx, code="validation_error", detail=str(e)))
+                    if len(errors) >= 20:
+                        break
+    except ValidationError as e:
+        # Envelope invalid
+        raise HTTPException(status_code=400, detail=str(e))
     rejected = received - accepted
-    if errors and model != TestRequest:
-        # For ingest, if envelope invalid, 400; else 202 with rejects
-        if "items must have length" in str(errors[0].detail) or "schema_version" in str(errors[0].detail) or "sent_at" in str(errors[0].detail):
-            raise HTTPException(status_code=400, detail=errors[0].detail)
     if enqueue and valid_items and sent_at:
         try:
             await enqueue_batch(request_id, client_request_id, mb_ip, sent_at, valid_items)
         except Exception:
             raise HTTPException(status_code=500, detail="Internal Server Error")
+    logger_bound.info("Processed request", received=received, accepted=accepted, rejected=rejected, errors_len=len(errors))
     response_data = {
         "status": "ok",
         "schema_version": SCHEMA_VERSION,
@@ -98,7 +99,6 @@ async def process_request(request: Request, model: type, enqueue: bool = False):
         "rejected": rejected,
         "errors": errors[:20]
     }
-    logger_bound.info("Processed request", accepted=accepted, rejected=rejected, errors_len=len(errors))
     return response_data, content_length, content_encoding
 
 @app.post("/v1/ingest", response_model=IngestResponse, status_code=status.HTTP_202_ACCEPTED)

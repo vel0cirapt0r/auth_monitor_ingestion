@@ -7,14 +7,17 @@ from ingest.config import SCHEMA_VERSION, ALLOWED_PROTOCOLS
 class Item(BaseModel):
     serial_number: str = Field(..., min_length=16, max_length=24)
     location: Optional[str] = None
-    protocol_type: str = Field(..., pattern=r"(?i)^(rps|pms|css|dss)$")
+    protocol_type: str = Field(...)
     token: str = Field(..., min_length=1)
     token_created_at: datetime = Field(...)
 
     @field_validator("protocol_type")
     @classmethod
-    def normalize_protocol(cls, v: str) -> str:
-        return v.lower()
+    def validate_and_normalize_protocol(cls, v: str) -> str:
+        lower_v = v.lower()
+        if lower_v not in ALLOWED_PROTOCOLS:
+            raise ValueError(f"protocol_type must be one of: {','.join(ALLOWED_PROTOCOLS)}")
+        return lower_v
 
     @field_validator("token_created_at", mode="before")
     @classmethod
@@ -33,7 +36,7 @@ class IngestRequest(BaseModel):
     schema_version: Literal[1] = Field(..., eq=SCHEMA_VERSION)
     sent_at: datetime = Field(...)
     client_request_id: Optional[str] = Field(None, max_length=128)
-    items: List[Item] = Field(...)
+    items: List[dict] = Field(...)  # Raw dicts for per-item validation in endpoint
 
     @field_validator("sent_at", mode="before")
     @classmethod
@@ -65,7 +68,7 @@ class TestRequest(BaseModel):
     schema_version: Optional[Literal[1]] = Field(None, eq=SCHEMA_VERSION)
     sent_at: Optional[datetime] = None
     client_request_id: Optional[str] = Field(None, max_length=128)
-    items: Optional[List[Item]] = Field(None)
+    items: Optional[List[dict]] = Field(None)  # Raw dicts for per-item validation
 
     @field_validator("sent_at", mode="before")
     @classmethod
@@ -91,7 +94,7 @@ class TestRequest(BaseModel):
     @model_validator(mode="after")
     def check_for_ping_or_validate(self):
         if self.items is not None:
-            if not self.schema_version or not self.sent_at:
+            if self.schema_version is None or self.sent_at is None:
                 raise ValueError("schema_version and sent_at required when items present")
             if len(self.items) > 100:
                 raise ValueError("items must have length <=100")
@@ -104,9 +107,8 @@ class ErrorDetail(BaseModel):
 
 class HealthResponse(BaseModel):
     status: str = "ok"
-    ts: str = Field(...)
+    time: str = Field(...)
     version: str = Field(...)
-    schema_version: int = SCHEMA_VERSION
 
 class IngestResponse(BaseModel):
     status: str = "ok"
