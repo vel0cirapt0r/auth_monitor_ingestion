@@ -33,7 +33,7 @@ class Item(BaseModel):
             raise ValueError(f"Invalid timezone-aware ISO8601: {e}")
 
 class IngestRequest(BaseModel):
-    schema_version: Literal[1] = Field(..., eq=SCHEMA_VERSION)
+    schema_version: Literal[1] = Field(...)
     sent_at: datetime = Field(...)
     client_request_id: Optional[str] = Field(None, max_length=128)
     items: List[dict] = Field(...)  # Raw dicts for per-item validation in endpoint
@@ -65,7 +65,7 @@ class IngestRequest(BaseModel):
         return self
 
 class TestRequest(BaseModel):
-    schema_version: Optional[Literal[1]] = Field(None, eq=SCHEMA_VERSION)
+    schema_version: Optional[Literal[1]] = Field(None)
     sent_at: Optional[datetime] = None
     client_request_id: Optional[str] = Field(None, max_length=128)
     items: Optional[List[dict]] = Field(None)  # Raw dicts for per-item validation

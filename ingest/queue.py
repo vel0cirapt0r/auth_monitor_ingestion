@@ -1,5 +1,6 @@
 import json
 import os
+import socket
 from datetime import datetime
 import asyncio
 from typing import Optional
@@ -29,7 +30,7 @@ async def enqueue_batch(request_id: str, client_request_id: Optional[str], mb_ip
 
 async def consume_and_process(processor_func):
     redis = await get_redis()
-    consumer_name = f"worker-{os.getpid()}"
+    consumer_name = f"worker-{socket.gethostname()}-{os.getpid()}"
     try:
         await redis.xgroup_create(STREAM_KEY, CONSUMER_GROUP, id="$", mkstream=True)
     except Exception as e:

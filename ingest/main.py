@@ -42,13 +42,14 @@ async def process_request(request: Request, model: type, enqueue: bool = False):
     body = await request.body()
     if len(body) > MAX_BODY_SIZE:
         raise HTTPException(status_code=413, detail="Payload Too Large")
-    if content_length is None:
-        content_length = len(body)
     if content_encoding == "gzip":
         try:
             body = gzip.decompress(body)
         except Exception:
             raise HTTPException(status_code=400, detail="Invalid gzip")
+        if len(body) > MAX_BODY_SIZE:
+            raise HTTPException(status_code=413, detail="Payload Too Large")
+        logger.debug("Decompressed gzip body", decompressed_size=len(body))
     try:
         data = orjson.loads(body) if body else {}
     except orjson.JSONDecodeError:
@@ -99,7 +100,7 @@ async def process_request(request: Request, model: type, enqueue: bool = False):
         "rejected": rejected,
         "errors": errors[:20]
     }
-    return response_data, content_length, content_encoding
+    return response_data, len(body) if content_encoding != "gzip" else content_length, content_encoding
 
 @app.post("/v1/ingest", response_model=IngestResponse, status_code=status.HTTP_202_ACCEPTED)
 async def ingest(request: Request):

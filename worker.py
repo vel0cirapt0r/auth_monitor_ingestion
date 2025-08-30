@@ -10,6 +10,12 @@ from ingest.logging_conf import logger
 import json
 
 
+def _to_aware_utc(dt: datetime | None) -> datetime | None:
+    if dt is None:
+        return None
+    return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+
+
 class Device(Model):
     id = fields.IntField(pk=True)
     serial_number = fields.CharField(max_length=24, unique=True)
@@ -89,14 +95,16 @@ async def process_batch(msg: Dict[str, Any]):
                 )
                 if created:
                     protocol_stats["created"] += 1
-                elif token_created_at > (protocol.token_created_at or datetime.min.replace(tzinfo=timezone.utc)):
-                    protocol.mb_ip = mb_ip
-                    protocol.token = token
-                    protocol.token_created_at = token_created_at
-                    await protocol.save(update_fields=["mb_ip", "token", "token_created_at"])
-                    protocol_stats["updated"] += 1
                 else:
-                    protocol_stats["noop"] += 1
+                    existing = _to_aware_utc(protocol.token_created_at)
+                    if existing is None or token_created_at > existing:
+                        protocol.mb_ip = mb_ip
+                        protocol.token = token
+                        protocol.token_created_at = token_created_at
+                        await protocol.save(update_fields=["mb_ip", "token", "token_created_at"])
+                        protocol_stats["updated"] += 1
+                    else:
+                        protocol_stats["noop"] += 1
         except IntegrityError as e:
             logger_bound.warning("Integrity error; retrying", exc_info=e, idx=idx)
             await asyncio.sleep(0.1)  # Short backoff for race
@@ -111,7 +119,8 @@ async def process_batch(msg: Dict[str, Any]):
                         device_stats["noop"] += 1
 
                     protocol = await DeviceProtocol.get(device=device, protocol_type=protocol_type)
-                    if token_created_at > (protocol.token_created_at or datetime.min.replace(tzinfo=timezone.utc)):
+                    existing = _to_aware_utc(protocol.token_created_at)
+                    if existing is None or token_created_at > existing:
                         protocol.mb_ip = mb_ip
                         protocol.token = token
                         protocol.token_created_at = token_created_at
